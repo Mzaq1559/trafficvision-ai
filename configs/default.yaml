@@ -1,0 +1,45 @@
+# TrafficVision AI - default configuration
+# Every value here maps 1:1 to app/config/settings.py dataclasses.
+# The Streamlit sidebar can override these at runtime; this file only
+# sets the defaults a fresh session starts with.
+
+processing_mode: balanced   # performance | balanced | accuracy
+
+detection:
+  model_name: yolov8n.pt
+  confidence_threshold: 0.35
+  iou_threshold: 0.45
+  processing_width: 640
+  inference_interval: 2
+  frame_skip: 0
+  classes: [2, 3, 5, 7]   # COCO ids: car, motorcycle, bus, truck
+  device: cpu
+
+tracking:
+  track_activation_threshold: 0.25
+  lost_track_buffer: 30
+  minimum_matching_threshold: 0.8
+  frame_rate: 30
+  minimum_consecutive_frames: 1
+  trajectory_length: 40
+
+speed:
+  enabled: true
+  pixels_per_meter: null              # set this OR calibration_points+real distance
+  calibration_points: null            # e.g. [[120, 400], [520, 400]]
+  calibration_real_distance_m: null   # real-world distance between the two points above
+  smoothing_window: 5
+  max_plausible_kmh: 220.0
+
+ui:
+  ui_update_interval: 5
+  show_trajectories: true
+  show_labels: true
+  max_table_rows: 200
+  theme_accent: "#2dd4bf"
+
+demo:
+  enabled: false
+  demo_resolution_width: 480
+  demo_inference_every_n_frames: 2
+  reduce_ui_overhead: true

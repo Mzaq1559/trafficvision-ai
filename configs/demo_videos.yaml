@@ -1,0 +1,19 @@
+# Configurable, publicly-accessible demo videos.
+# These are real files hosted by Intel's (archived) sample-videos repo,
+# commonly used for traffic/vehicle CV demos. Add your own entries here
+# rather than hardcoding URLs anywhere in the Python code.
+#
+# NOTE: on Streamlit Community Cloud, downloading these at runtime requires
+# outbound internet access (available by default) and the `requests`
+# dependency declared in requirements.txt.
+
+demo_videos:
+  - name: "Traffic - cars, bicycles, pedestrians"
+    url: "https://github.com/intel-iot-devkit/sample-videos/raw/master/person-bicycle-car-detection.mp4"
+    description: "Mixed traffic scene: cars, a bicycle and pedestrians crossing an intersection."
+    source: "Intel IoT DevKit sample-videos (archived, public)"
+
+  - name: "Traffic - cars only"
+    url: "https://github.com/intel-iot-devkit/sample-videos/raw/master/car-detection.mp4"
+    description: "Street-level footage focused on passing cars, good for speed-estimation demos."
+    source: "Intel IoT DevKit sample-videos (archived, public)"
