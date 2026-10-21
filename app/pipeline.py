@@ -10,6 +10,9 @@ detector and do not update the tracker, so ByteTrack never receives the same
 boxes twice with new timestamps. Consequently, boxes, trajectories, directions
 and speeds refresh only on inference frames, and `lost_track_buffer` counts
 inference updates rather than video frames.
+
+Each ProcessedFrame holds copies of the track state at that frame, so results
+can be read after later frames have been processed.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ import numpy as np
 
 from app.config.settings import AppConfig
 from app.detection.detector import VehicleDetector
-from app.tracking.tracker import VehicleTracker, TrackedVehicle
+from app.tracking.tracker import VehicleTracker, TrackedVehicle, copy_vehicle
 from app.speed.estimator import SpeedEstimator
 from app.utils.trajectory import estimate_direction
 
@@ -35,7 +38,7 @@ class ProcessedFrame:
 
 
 class FrameProcessor:
-    """Stateful per-run processor. Call `reset()` before a new video/run."""
+    """Stateful per-run processor. Use a new instance for each video."""
 
     def __init__(self, config: AppConfig, detector: VehicleDetector):
         self.config = config
@@ -55,9 +58,7 @@ class FrameProcessor:
         )
 
     def reset(self) -> None:
-        """Completely reset processing state - required whenever a new
-        processing run starts, so IDs/trajectories/speeds never leak
-        between separate videos or repeated runs of the same video."""
+        """Reset processing state so IDs/trajectories/speeds never leak between runs."""
         self.tracker.reset()
         self.speed_estimator.reset()
 
@@ -70,7 +71,7 @@ class FrameProcessor:
             # state from the most recent inference frame unchanged.
             return ProcessedFrame(
                 frame=frame,
-                vehicles=self.tracker.all_vehicles(),
+                vehicles=self.tracker.snapshot_vehicles(),
                 frame_index=frame_index,
                 timestamp_s=timestamp_s,
                 ran_inference=False,
@@ -84,13 +85,17 @@ class FrameProcessor:
             x1, y1, x2, y2 = d.xyxy
             d.xyxy = (x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y)
 
-        vehicles = self.tracker.update(detections, timestamp_s)
+        vehicles = self.tracker.update(detections, timestamp_s, frame_shape=frame.shape)
 
         for veh in vehicles:
             if veh.status != "active":
                 continue
             veh.direction = estimate_direction(list(veh.trajectory))
-            if self.config.speed.enabled:
+            # A speed sample uses the two latest centres. If either box touched the
+            # frame border it may be clipped, so no sample is taken and the last
+            # reliable speed is kept.
+            clipped = veh.edge_clipped or veh.prev_edge_clipped
+            if self.config.speed.enabled and not clipped:
                 speed = self.speed_estimator.estimate(veh.track_id, list(veh.trajectory))
                 if speed is not None:
                     veh.speed_kmh = speed.value
@@ -98,7 +103,7 @@ class FrameProcessor:
 
         return ProcessedFrame(
             frame=frame,
-            vehicles=vehicles,
+            vehicles=[copy_vehicle(v) for v in vehicles],
             frame_index=frame_index,
             timestamp_s=timestamp_s,
             ran_inference=True,
