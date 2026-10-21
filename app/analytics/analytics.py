@@ -27,7 +27,9 @@ class AnalyticsSnapshot:
 
 
 class TrafficAnalytics:
-    """Stateless aggregator (all state lives in the tracker / vehicle list)."""
+    """Aggregates one run's vehicle list. The only state it keeps is the
+    run start time (`_start_time_s`) and processing-rate bookkeeping, so use
+    a new instance per run. It never modifies tracker state."""
 
     def __init__(self) -> None:
         self._start_time_s: Optional[float] = None
