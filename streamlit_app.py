@@ -1,21 +1,24 @@
-"""Streamlit entry point for local-video TrafficVision AI demos."""
+"""Streamlit entry point for local-video TrafficVision AI demos.
+
+Run results are kept in session state. They survive widget interactions and
+reruns, are replaced by each new processing run, and are discarded when the
+uploaded file changes or is removed.
+"""
 from __future__ import annotations
-import tempfile
-from pathlib import Path
-import time
-import cv2
+from typing import Any
+
 import streamlit as st
 
-from app.analytics.analytics import TrafficAnalytics
-from app.config import load_config
+from app.config import DEFAULT_CONFIG_PATH, read_config
 from app.detection.detector import VehicleDetector
-from app.pipeline import FrameProcessor
-from app.utils.drawing import draw_detections, draw_trajectory
+from app.runner import process_video
+from app.ui_state import RESULTS_KEY, is_explicit_config, is_stale, upload_key
 
 
 @st.cache_resource(show_spinner="Loading detector weights...")
 def _get_detector(model_name: str, confidence: float, iou: float, classes: tuple, device: str) -> VehicleDetector:
-    """Cache the YOLO model across Streamlit reruns; the detector holds no per-run state."""
+    """Cache the YOLO model across reruns. The detector holds no per-run tracking state.
+    Concurrent predict calls from several browser sessions are not verified to be safe."""
     return VehicleDetector(
         model_name=model_name,
         confidence_threshold=confidence,
@@ -25,92 +28,82 @@ def _get_detector(model_name: str, confidence: float, iou: float, classes: tuple
     )
 
 
-st.set_page_config(page_title="TrafficVision AI", page_icon="🚦", layout="wide")
-st.title("TrafficVision AI")
-st.caption("Vehicle detection and tracking prototype — results are not ground-truth validated.")
-uploaded = st.file_uploader("Upload a traffic video", type=["mp4", "avi", "mov", "mkv"])
-max_frames = st.sidebar.slider("Maximum frames to process", min_value=30, max_value=600, value=180, step=30)
-config_path = st.sidebar.text_input("Configuration file", "configs/default.yaml")
-if uploaded is None:
-    st.info("Upload a local video to begin. YOLO weights may be downloaded on first inference.")
-    st.stop()
+def _run(uploaded, config_path: str, max_frames: int, key: str) -> dict[str, Any]:
+    """Process one upload, driving the live progress and preview widgets."""
+    progress = st.progress(0, text="Processing video...")
+    preview = st.empty()
 
-if st.button("Process video", type="primary"):
-    video_path = None
-    cap = None
-    try:
-        config = load_config(config_path)
-        suffix = Path(uploaded.name).suffix or ".mp4"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
-            handle.write(uploaded.getbuffer())
-            video_path = handle.name
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise RuntimeError("OpenCV could not decode this file. Try a video using a supported codec.")
-        detector = _get_detector(
+    def on_frame(done: int, limit: int, rgb) -> None:
+        preview.image(rgb, channels="RGB", use_container_width=True)
+        progress.progress(min(1.0, done / max(1, limit)), text=f"Processed {done}/{limit} frames")
+
+    def make_detector(config):
+        return _get_detector(
             config.detection.model_name,
             config.detection.confidence_threshold,
             config.detection.iou_threshold,
             tuple(config.detection.classes),
             config.detection.device,
         )
-        processor = FrameProcessor(config, detector)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        limit = min(max_frames, total) if total > 0 else max_frames
-        progress = st.progress(0, text="Processing video...")
-        preview = st.empty()
-        processed = 0
-        latest_vehicles = []
-        started = time.perf_counter()
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        fps = fps if fps and fps > 0 else 30.0
-        while processed < limit:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            result = processor.process_frame(frame, processed, processed / fps)
-            latest_vehicles = result.vehicles
-            annotated = frame.copy()
-            if config.ui.show_labels:
-                annotated = draw_detections(annotated, latest_vehicles, show_labels=True)
-            if config.ui.show_trajectories:
-                annotated = draw_trajectory(annotated, latest_vehicles)
-            preview.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
-            processed += 1
-            progress.progress(min(1.0, processed / max(1, limit)), text=f"Processed {processed}/{limit} frames")
-        elapsed = max(time.perf_counter() - started, 1e-9)
-        st.metric("Frames processed", processed)
-        st.metric("Observed processing throughput (including preview updates)", f"{processed / elapsed:.2f} FPS")
-        st.caption("Throughput depends on hardware, model, input and UI overhead. Track counts and speed values are estimates.")
 
-        snap = TrafficAnalytics().snapshot(
-            latest_vehicles,
-            current_video_time_s=processed / fps,
-            wall_clock_now=time.perf_counter(),
-        )
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Tracks retained (incl. lost)", snap.total_vehicles)
-        col2.metric("Active at last processed frame", snap.active_vehicles)
-        avg = "n/a" if snap.average_speed is None else f"{snap.average_speed} {snap.speed_unit}"
-        col3.metric("Mean speed of active tracks", avg)
-        st.caption(f"Class counts: {snap.class_distribution or '—'} · Direction counts: {snap.direction_distribution or '—'}")
+    return process_video(uploaded.getvalue(), uploaded.name, config_path, max_frames, key,
+                         make_detector=make_detector, on_frame=on_frame)
 
-        active = [v for v in latest_vehicles if v.status == "active"]
-        if active:
-            st.dataframe([{"track_id": v.track_id, "class": v.class_name,
-                           "direction": v.direction,
-                           "speed": v.speed_kmh,
-                           "speed_unit": "km/h" if v.speed_is_calibrated else "px/s (approx.)",
-                           "frames_seen": v.frames_seen}
-                          for v in active], use_container_width=True)
-    except Exception as exc:
-        st.error(f"Video processing failed: {exc}")
-        st.exception(exc)
-    finally:
-        if cap is not None:
-            cap.release()
-        if video_path:
-            try:
-                Path(video_path).unlink(missing_ok=True)
-            except OSError:
-                pass
+
+def _render(stored: dict[str, Any]) -> None:
+    for message in stored.get("warnings", []):
+        st.warning(message)
+    if stored.get("error"):
+        st.error(stored["error"])
+        return
+    st.caption(f"Configuration in use: {stored['config_source']}")
+    st.metric("Frames processed", stored["frames"])
+    st.metric("Observed processing throughput (including preview updates)", f"{stored['fps_observed']:.2f} FPS")
+    st.caption("Throughput depends on hardware, model, input and UI overhead. Track counts and speed values are estimates.")
+    if stored["annotated_rgb"] is not None:
+        st.image(stored["annotated_rgb"], channels="RGB", caption="Last processed frame", use_container_width=True)
+    s = stored["summary"]
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Tracks retained (incl. lost)", s["total_vehicles"])
+    col2.metric("Active at last inference frame", s["active_vehicles"])
+    avg = "n/a" if s["average_speed"] is None else f"{s['average_speed']} {s['speed_unit']}"
+    col3.metric("Mean speed of active tracks", avg)
+    st.caption(f"Class counts (all retained tracks): {s['class_distribution'] or '—'} · "
+               f"Direction counts (all retained tracks): {s['direction_distribution'] or '—'}")
+    if stored["table"]:
+        st.dataframe(stored["table"], use_container_width=True)
+
+
+st.set_page_config(page_title="TrafficVision AI", page_icon="🚦", layout="wide")
+st.title("TrafficVision AI")
+st.caption("Vehicle detection and tracking prototype — results are not ground-truth validated.")
+uploaded = st.file_uploader("Upload a traffic video", type=["mp4", "avi", "mov", "mkv"])
+max_frames = st.sidebar.slider("Maximum frames to process", min_value=30, max_value=600, value=180, step=30)
+config_path = st.sidebar.text_input("Configuration file", DEFAULT_CONFIG_PATH)
+
+# Show the state of the selected configuration before any processing.
+_path = config_path.strip() or DEFAULT_CONFIG_PATH
+_status = read_config(_path, explicit=is_explicit_config(_path))
+if _status.error is not None:
+    st.sidebar.error(_status.error)
+else:
+    for _message in _status.warnings:
+        st.sidebar.warning(_message)
+    st.sidebar.caption(f"Configuration loaded: {_status.source or 'built-in defaults'}")
+
+current_key = upload_key(uploaded.name, uploaded.size) if uploaded is not None else None
+if is_stale(st.session_state.get(RESULTS_KEY), current_key):
+    st.session_state.pop(RESULTS_KEY, None)
+
+if uploaded is None:
+    st.info("Upload a local video to begin. YOLO weights may be downloaded on first inference.")
+    st.stop()
+
+if st.button("Process video", type="primary"):
+    st.session_state.pop(RESULTS_KEY, None)
+    st.session_state[RESULTS_KEY] = _run(uploaded, config_path, max_frames, current_key)
+    st.rerun()
+
+stored = st.session_state.get(RESULTS_KEY)
+if stored is not None:
+    _render(stored)
