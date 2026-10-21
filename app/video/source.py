@@ -9,9 +9,13 @@ Supports three input modes:
 
 All sources expose the same minimal interface so the processing pipeline
 never needs to know which one it is dealing with.
+
+Note: the Streamlit entry point currently calls cv2.VideoCapture directly and
+does not use these classes. They are untested in this repository.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import time
@@ -150,7 +154,8 @@ class URLVideoSource(FileVideoSource):
         import requests  # local import: only needed for this mode
 
         tmp_dir = tempfile.gettempdir()
-        local_path = os.path.join(tmp_dir, f"trafficvision_dl_{abs(hash(url))}.mp4")
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        local_path = os.path.join(tmp_dir, f"trafficvision_dl_{digest}.mp4")
 
         if not os.path.exists(local_path):
             resp = requests.get(url, stream=True, timeout=timeout_s)
