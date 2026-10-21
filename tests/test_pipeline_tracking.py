@@ -4,8 +4,6 @@ from collections import deque
 import numpy as np
 import pytest
 
-pytest.importorskip("supervision")
-
 from app.analytics.analytics import TrafficAnalytics
 from app.config import AppConfig
 from app.detection.detector import Detection
@@ -106,3 +104,19 @@ def test_analytics_speed_ignores_lost_tracks():
     assert snap.total_vehicles == 2
     assert snap.active_vehicles == 1
     assert snap.average_speed == pytest.approx(30.0)
+
+
+def test_processed_frame_vehicles_are_snapshots_not_live_objects():
+    """Regression: results must keep the state at their own frame. Previously every
+    ProcessedFrame referenced the same live objects, so reading them after the run
+    showed only the final state."""
+    det = FakeDetector([[(10, 10, 50, 50)], [(12, 10, 52, 50)], [(14, 10, 54, 50)]])
+    proc = FrameProcessor(AppConfig(), det)
+    first = proc.process_frame(_blank_frame(), 0, 0.0)
+    snapshot_len = len(first.vehicles[0].trajectory)
+    snapshot_status = first.vehicles[0].status
+    for i in range(1, 6):
+        proc.process_frame(_blank_frame(), i, i / 30)
+    assert len(first.vehicles[0].trajectory) == snapshot_len == 1
+    assert first.vehicles[0].status == snapshot_status
+    assert first.vehicles[0] is not proc.tracker.all_vehicles()[0]
