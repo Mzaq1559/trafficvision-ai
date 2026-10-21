@@ -41,12 +41,12 @@ Status labels: **Implemented** (code path exercised by the Streamlit app or test
 | Class voting | Majority vote over per-frame class labels | `app/tracking/tracker.py` | Implemented |
 | Trajectory history | Bounded deque of `(x, y, t)` centre points at inference frames | `app/tracking/tracker.py` | Implemented |
 | Direction | Eight image-plane directions from start/end of trajectory window | `app/utils/trajectory.py` | Implemented; not geographic bearings |
-| Speed | Displacement between last two inference samples, moving-average smoothed | `app/speed/estimator.py`, `app/pipeline.py` | Partial: samples touching a frame border are rejected; uncalibrated values are px/s; calibrated values have no perspective correction |
+| Speed | Displacement between last two inference samples, moving-average smoothed; samples touching the frame border are rejected | `app/speed/estimator.py`, `app/pipeline.py` | Partial: uncalibrated values are px/s; calibrated values have no perspective correction |
 | Speed calibration | One `pixels_per_meter`, or two image points plus a real distance | `app/config/settings.py` | Implemented; global scale only |
 | Traffic summary | Track totals, active count, class/direction counts, mean speed of active tracks | `app/analytics/analytics.py` | Partial: totals count retained tracks, not line crossings |
 | Vehicle counting | Virtual counting line | — | Not included |
-| Local-video UI | Upload, bounded processing, annotated preview, active-track table | `streamlit_app.py` | Implemented; end-to-end run with real video and YOLO weights not verified here |
-| Webcam and URL input | `FileVideoSource`, `WebcamVideoSource`, `URLVideoSource` | `app/video/source.py` | Partial: module exists and is not used by the UI |
+| Local-video UI | Upload, bounded processing, annotated preview, active-track table, results kept in session state | `streamlit_app.py`, `app/runner.py`, `app/ui_state.py` | Implemented; browser upload flow and YOLO inference not verified here |
+| Webcam and URL input | `FileVideoSource`, `WebcamVideoSource`, `URLVideoSource` (atomic cached download) | `app/video/source.py` | Partial: module exists, is tested in isolation, and is not used by the UI |
 | Exported annotated video | — | — | Not included |
 | Ground-truth metrics (mAP, HOTA, IDF1, counting error) | — | — | Not included |
 | Perspective-aware calibration | Camera or road-plane homography | — | Not included |
@@ -75,7 +75,9 @@ Only inference frames touch the detector and tracker. Skipped frames return the 
 
 Module responsibilities:
 
-- `app/pipeline.py`: `FrameProcessor`, the per-frame orchestration (scheduling, detection, tracking, direction, speed).
+- `app/pipeline.py`: `FrameProcessor`, the per-frame orchestration (scheduling, detection, tracking, direction, speed). Returns per-frame copies of track state.
+- `app/runner.py`: `process_video`, the processing path used by the UI (no Streamlit imports, so it is testable).
+- `app/ui_state.py`: session-state rules (stale-result detection, explicit configuration paths).
 - `app/detection/detector.py`: YOLO wrapper and result parsing.
 - `app/tracking/tracker.py`: ByteTrack adapter and persistent `TrackedVehicle` state.
 - `app/speed/estimator.py`: speed estimates and calibration helper.
@@ -84,7 +86,7 @@ Module responsibilities:
 - `app/utils/drawing.py`: boxes, labels, trajectories (active tracks only by default).
 - `app/config/settings.py`: typed configuration and YAML loader.
 - `app/video/source.py`: source abstractions (not used by the current UI).
-- `streamlit_app.py`: the only user-facing entry point.
+- `streamlit_app.py`: the only user-facing entry point; it renders results and sidebar status.
 
 ## Methodology
 
@@ -98,7 +100,9 @@ Skipped frames do not call the detector and do not update the tracker. Earlier v
 
 `VehicleTracker` passes each inference frame's detections to `supervision.ByteTrack` and keeps per-track state keyed by the returned track ID. Each track records the last box, a majority-vote class label, first and last seen timestamps, a count of inference updates (`frames_seen`), and a bounded trajectory.
 
-Track IDs are temporary. ByteTrack can reassign identities after long occlusions, and IDs are not comparable across separate runs. Tracks not matched in an update get `status = "lost"`. They stay in the run's track list but are not drawn and do not contribute to active-track speed statistics.
+Track IDs are temporary. ByteTrack can reassign identities after long occlusions. IDs are also not guaranteed to restart at 1 for each run: supervision's ByteTrack uses a process-wide counter, so a second run in the same Python process continues the numbering. Only the set of tracks is isolated between runs. Tracks not matched in an update get `status = "lost"`. They stay in the run's track list but are not drawn and do not contribute to active-track speed statistics.
+
+A track that reappears within the buffer keeps its identity and its speed is computed across the gap from the timestamps of the two inference samples. This was checked on a synthetic 4-frame occlusion (ID kept, speed 36.0 km/h).
 
 `tracking.lost_track_buffer` and `tracking.frame_rate` are passed to ByteTrack. Because ByteTrack only sees inference frames, `lost_track_buffer` counts inference updates, not video frames. `frame_rate` is a fixed config value; it is not derived from the video's FPS.
 
@@ -125,7 +129,7 @@ Without a scale, the value is in px/s and labelled `px/s~` on the frame and `px/
 The summary (`TrafficAnalytics`) reports:
 
 - **Tracks retained**: all tracks in the run, including lost ones. This is not a count of unique vehicles and not a count of line crossings.
-- **Active at last processed frame**: tracks with `status == "active"` after the final inference frame.
+- **Active at last inference frame**: tracks with `status == "active"` after the final inference frame.
 - **Mean speed of active tracks**: the average of their current smoothed speeds, labelled with its unit. Lost tracks are excluded.
 - **Class and direction distributions**: counts over all retained tracks.
 - **Flow per minute** (computed but not shown in the UI): retained tracks divided by elapsed video minutes since the first track. It is a coarse statistic.
