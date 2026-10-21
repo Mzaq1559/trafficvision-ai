@@ -98,6 +98,20 @@ def load_config(path: str | Path = "configs/default.yaml") -> AppConfig:
         raise ValueError("processing_width and inference_interval must be positive")
     if cfg.speed.pixels_per_meter is not None and cfg.speed.pixels_per_meter <= 0:
         raise ValueError("speed.pixels_per_meter must be positive when provided")
+    # Permit calibration to be specified as two image points plus their known
+    # real-world separation. An explicit pixels_per_meter value takes priority.
+    if cfg.speed.pixels_per_meter is None and cfg.speed.calibration_points is not None:
+        points = cfg.speed.calibration_points
+        distance = cfg.speed.calibration_real_distance_m
+        if len(points) != 2 or any(len(point) != 2 for point in points):
+            raise ValueError("speed.calibration_points must contain exactly two [x, y] points")
+        if distance is None or distance <= 0:
+            raise ValueError("speed.calibration_real_distance_m must be positive when calibration_points are set")
+        import math
+        pixel_distance = math.hypot(points[1][0] - points[0][0], points[1][1] - points[0][1])
+        if pixel_distance <= 0:
+            raise ValueError("speed.calibration_points must not be identical")
+        cfg.speed.pixels_per_meter = pixel_distance / distance
     return cfg
 
 def get_processing_mode_presets() -> dict[ProcessingMode, dict[str, Any]]:
