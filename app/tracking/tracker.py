@@ -91,7 +91,8 @@ class VehicleTracker:
         self, detections: List[Detection], timestamp_s: float
     ) -> List[TrackedVehicle]:
         """Feed one frame's detections in, get back the current set of
-        actively-tracked vehicles (with persistent IDs and trajectories)."""
+        tracked vehicles (with persistent IDs and trajectories). Tracks
+        not matched in this update are marked 'lost' but retained."""
         sv = self._sv
 
         # Map class_id -> class_name (not position -> name: tracked results
@@ -114,7 +115,8 @@ class VehicleTracker:
         seen_ids = set()
         for i in range(len(tracked)):
             track_id = int(tracked.tracker_id[i])
-            box = tuple(float(v) for v in tracked.xyxy[i])
+            x1, y1, x2, y2 = (float(v) for v in tracked.xyxy[i])
+            box = (x1, y1, x2, y2)
             conf = float(tracked.confidence[i]) if tracked.confidence is not None else 0.0
             cls_id = int(tracked.class_id[i]) if tracked.class_id is not None else -1
             class_name = id_to_name.get(cls_id, "vehicle")
@@ -143,13 +145,16 @@ class VehicleTracker:
             cx, cy = veh.center
             veh.trajectory.append((cx, cy, timestamp_s))
 
-        # Anything not seen this frame is (still) lost; ByteTrack already
-        # drops IDs past lost_track_buffer, so we mirror that by marking
-        # status rather than deleting immediately (keeps the table stable).
+        # Anything not seen this update is marked lost. It is kept (not deleted)
+        # so the run's track list stays stable; drawing skips lost tracks.
         for track_id, veh in self._vehicles.items():
             if track_id not in seen_ids:
                 veh.status = "lost"
 
+        return self.all_vehicles()
+
+    def all_vehicles(self) -> List[TrackedVehicle]:
+        """Every track seen in this run, including tracks currently marked lost."""
         return list(self._vehicles.values())
 
     def active_vehicles(self) -> List[TrackedVehicle]:
