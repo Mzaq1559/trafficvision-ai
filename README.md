@@ -89,7 +89,7 @@ For points ((x_1,y_1,t_1)) and ((x_2,y_2,t_2)), pixel speed is:
 
 `v_px/s = sqrt((x2-x1)^2 + (y2-y1)^2) / (t2-t1)`
 
-When a positive pixels-per-meter scale is configured:
+When a positive pixels-per-meter scale is configured directly—or derived from two configured reference points and their known real-world distance:
 
 `v_km/h = (v_px/s / pixels_per_meter) * 3.6`
 
