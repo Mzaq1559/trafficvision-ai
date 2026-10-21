@@ -46,3 +46,11 @@ def test_invalid_config_is_rejected(tmp_path):
     p = tmp_path / "bad.yaml"
     p.write_text("detection:\n  confidence_threshold: 2\n", encoding="utf-8")
     with pytest.raises(ValueError): load_config(p)
+
+def test_config_derives_speed_calibration_from_reference_points(tmp_path):
+    p = tmp_path / "calibrated.yaml"
+    p.write_text(
+        "speed:\\n  calibration_points: [[0, 0], [30, 40]]\\n  calibration_real_distance_m: 10\\n",
+        encoding="utf-8",
+    )
+    assert load_config(p).speed.pixels_per_meter == pytest.approx(5.0)
