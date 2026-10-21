@@ -46,7 +46,7 @@ for the branch; the real YOLO-backed application was not exercised end-to-end.
   explicit lightweight dependencies in `requirements-test.txt`; the tests no
   longer hide missing core imports behind `importorskip`.
 - **UI mislabeled tracker updates as frames seen.** The table reports the
-  inference-update count as `frames_seen`; the UI metric separately reports
+  inference-update count as `tracker_updates`; the UI metric separately reports
   the number of video frames processed.
 - **Analytics and smoothing documentation were inaccurate.** The analytics
   docstring and effective minimum smoothing-window behavior are documented.
