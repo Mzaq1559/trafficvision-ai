@@ -78,8 +78,9 @@ class SpeedEstimator:
         pixel_dist = math.hypot(x2 - x1, y2 - y1)
         pixels_per_s = pixel_dist / dt
 
-        if self.is_calibrated:
-            meters_per_s = pixels_per_s / self.pixels_per_meter
+        ppm = self.pixels_per_meter
+        if ppm is not None and ppm > 0:
+            meters_per_s = pixels_per_s / ppm
             raw_kmh = meters_per_s * 3.6
             smoothed = self._smooth(track_id, raw_kmh)
             # Guard against absurd spikes from a single bad detection/track swap.

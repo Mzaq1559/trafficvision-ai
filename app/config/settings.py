@@ -1,6 +1,11 @@
-"""Typed application configuration loaded from configs/default.yaml."""
+"""Typed application configuration loaded from configs/default.yaml.
+
+Keys marked RESERVED below are parsed and validated but not read by the
+current pipeline or Streamlit app. They are kept for planned work and have no
+effect yet. Unknown keys are ignored silently by the loader.
+"""
 from __future__ import annotations
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -18,7 +23,7 @@ class DetectionConfig:
     iou_threshold: float = 0.45
     processing_width: int = 640
     inference_interval: int = 2
-    frame_skip: int = 0
+    frame_skip: int = 0  # RESERVED: not used; scheduling uses inference_interval
     classes: list[int] = field(default_factory=lambda: [2, 3, 5, 7])
     device: str = "cpu"
 
@@ -33,7 +38,7 @@ class TrackingConfig:
 
 @dataclass
 class SpeedConfig:
-    enabled: bool = True
+    enabled: bool = True  # honoured by FrameProcessor
     pixels_per_meter: float | None = None
     calibration_points: list[list[float]] | None = None
     calibration_real_distance_m: float | None = None
@@ -42,14 +47,14 @@ class SpeedConfig:
 
 @dataclass
 class UIConfig:
-    ui_update_interval: int = 5
+    ui_update_interval: int = 5  # RESERVED
     show_trajectories: bool = True
     show_labels: bool = True
-    max_table_rows: int = 200
-    theme_accent: str = "#2dd4bf"
+    max_table_rows: int = 200  # RESERVED
+    theme_accent: str = "#2dd4bf"  # RESERVED
 
 @dataclass
-class DemoConfig:
+class DemoConfig:  # RESERVED: whole section is unused
     enabled: bool = False
     demo_resolution_width: int = 480
     demo_inference_every_n_frames: int = 2
@@ -57,16 +62,16 @@ class DemoConfig:
 
 @dataclass
 class AppConfig:
-    processing_mode: ProcessingMode = ProcessingMode.BALANCED
+    processing_mode: ProcessingMode = ProcessingMode.BALANCED  # RESERVED: presets not applied
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     speed: SpeedConfig = field(default_factory=SpeedConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     demo: DemoConfig = field(default_factory=DemoConfig)
 
-def _section(cls: type, values: dict[str, Any] | None):
+def _section(cls: Any, values: dict[str, Any] | None):
     values = values or {}
-    allowed = cls.__dataclass_fields__.keys()
+    allowed = cls.__dataclass_fields__.keys()  # type: ignore[attr-defined]
     return cls(**{k: v for k, v in values.items() if k in allowed})
 
 def load_config(path: str | Path = "configs/default.yaml") -> AppConfig:
