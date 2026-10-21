@@ -59,7 +59,12 @@ class VehicleDetector:
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
-        self.classes = list(classes) if classes else list(COCO_VEHICLE_CLASSES.keys())
+        if classes is None:
+            self.classes = list(COCO_VEHICLE_CLASSES.keys())  # default: all vehicle classes
+        else:
+            self.classes = list(classes)
+            if not self.classes:
+                raise ValueError("classes must not be empty; pass None to use the vehicle defaults")
         self.device = device
         self._model = None  # lazy-loaded so importing this module is cheap
 
