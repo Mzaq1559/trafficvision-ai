@@ -2,9 +2,8 @@
 Aggregate per-vehicle state into dashboard-ready traffic analytics.
 
 This module only reads TrackedVehicle objects; it never mutates tracker
-state, so it can be called at whatever cadence the UI wants (see
-UIConfig.ui_update_interval) independently of how often frames are
-processed.
+state. Track totals count every track retained in the run (including lost
+tracks); speed statistics use active tracks only.
 """
 from __future__ import annotations
 
@@ -28,7 +27,9 @@ class AnalyticsSnapshot:
 
 
 class TrafficAnalytics:
-    """Stateless aggregator (all state lives in the tracker / vehicle list)."""
+    """Aggregates one run's vehicle list. The only state it keeps is the
+    run start time (`_start_time_s`) and processing-rate bookkeeping, so use
+    a new instance per run. It never modifies tracker state."""
 
     def __init__(self) -> None:
         self._start_time_s: Optional[float] = None
@@ -62,8 +63,10 @@ class TrafficAnalytics:
         class_dist = Counter(v.class_name for v in all_vehicles)
         direction_dist = Counter(v.direction for v in all_vehicles if v.direction)
 
-        speeds = [v.speed_kmh for v in all_vehicles if v.speed_kmh is not None]
-        calibrated = any(v.speed_is_calibrated for v in all_vehicles if v.speed_kmh is not None)
+        # Speed statistics use active tracks only: lost tracks carry the speed
+        # from their last observation, which is stale.
+        speeds = [v.speed_kmh for v in active if v.speed_kmh is not None]
+        calibrated = any(v.speed_is_calibrated for v in active if v.speed_kmh is not None)
         avg_speed = round(sum(speeds) / len(speeds), 1) if speeds else None
 
         if self._start_time_s is None and all_vehicles:

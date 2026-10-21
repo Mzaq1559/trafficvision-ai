@@ -2,20 +2,22 @@
 
 **A modular computer-vision prototype for vehicle detection, multi-object tracking, trajectory analysis, and traffic-oriented summaries from video.**
 
-TrafficVision AI explores converting traffic video into structured vehicle observations using an Ultralytics YOLO detector and ByteTrack via `supervision`. It maintains per-track state and trajectories, derives image-plane direction, estimates displacement-based speed, and aggregates summary statistics.
+TrafficVision AI converts traffic video into per-vehicle observations using an Ultralytics YOLO detector and ByteTrack (via `supervision`). It keeps per-track state and trajectories, estimates image-plane direction and displacement-based speed, and summarises the run.
 
-> **Research status:** the repository provides an implementation prototype, not a validated traffic measurement system. It does not currently include labelled evaluation data or benchmark results. Reported outputs must be treated as model-derived estimates.
+> **Research status:** this is an implementation prototype, not a validated traffic measurement system. The repository contains no labelled evaluation data and no benchmark results. All outputs are model-derived estimates. Speed values are only physical (km/h) when the camera is calibrated, and even then they are not perspective-corrected.
 
 ## Contents
 
 - [Problem and motivation](#problem-and-motivation)
-- [Capabilities](#capabilities)
+- [Capabilities and status](#capabilities-and-status)
 - [Architecture](#architecture)
 - [Methodology](#methodology)
+- [Configuration](#configuration)
 - [Repository structure](#repository-structure)
 - [Technology stack](#technology-stack)
 - [Setup and execution](#setup-and-execution)
-- [Testing and evaluation](#testing-and-evaluation)
+- [Testing and validation](#testing-and-validation)
+- [Evaluation methodology](#evaluation-methodology)
 - [Limitations](#limitations)
 - [Research directions](#research-directions)
 - [Troubleshooting](#troubleshooting)
@@ -24,97 +26,163 @@ TrafficVision AI explores converting traffic video into structured vehicle obser
 
 ## Problem and motivation
 
-Traffic video contains spatial and temporal information, but converting it into useful vehicle-level observations requires detection and association across frames. General challenges include partial occlusion, small/distant vehicles, changing illumination, motion blur, perspective effects, and identity switches. The repository does not include a labelled evaluation dataset, so it does not establish robustness to any specific challenge.
+Traffic video contains spatial and temporal information, but turning it into vehicle-level observations requires detection and association across frames. Partial occlusion, small or distant vehicles, lighting changes, motion blur, perspective, and identity switches all degrade this. The repository includes no labelled dataset, so it does not establish robustness to any of these conditions.
 
-## Capabilities
+## Capabilities and status
 
-| Capability | Technical approach | Implementation | Status |
+Status labels: **Implemented** (code path exercised by the Streamlit app or tests), **Partial** (code exists but has a stated gap), **Reserved** (config key only, no effect), **Not included**.
+
+| Capability | Approach | Location | Status |
 |---|---|---|---|
-| Vehicle detection | Ultralytics YOLO inference | `app/detection/detector.py` | Implemented; accuracy not benchmarked |
-| Vehicle class filtering | COCO IDs 2, 3, 5, 7: car, motorcycle, bus, truck | `app/detection/detector.py`, `configs/default.yaml` | Implemented |
-| Multi-object tracking | `supervision.ByteTrack` | `app/tracking/tracker.py` | Implemented; tracking quality not evaluated |
-| Trajectory history | Bounded history of center points and video timestamps | `app/tracking/tracker.py` | Implemented |
-| Image-plane direction | Eight-direction displacement classification | `app/utils/trajectory.py` | Implemented; not geographic bearings |
-| Speed estimate | Pixel displacement/time, optional pixels-per-meter conversion | `app/speed/estimator.py` | Implemented; real-world accuracy unvalidated |
-| Traffic summaries | Track/class/direction counts, average speed, flow estimate, processing FPS | `app/analytics/analytics.py` | Implemented; semantics are approximate |
-| Local-video UI | Streamlit upload, bounded processing, annotated frame preview | `streamlit_app.py` | Entry point provided; runtime still needs local validation |
-| Ground-truth metrics | mAP, HOTA, IDF1, counting error | — | Not included |
-| Perspective-aware calibration | Camera/road-plane calibration | — | Not included |
+| Vehicle detection | Ultralytics YOLO, COCO classes 2/3/5/7 | `app/detection/detector.py` | Implemented; accuracy not measured |
+| Inference scheduling | Detector and tracker run every `inference_interval` frames | `app/pipeline.py` | Implemented; skipped frames reuse last-known state |
+| Multi-object tracking | `supervision.ByteTrack` with persistent track IDs | `app/tracking/tracker.py` | Implemented; tracking quality not measured |
+| Lost-track handling | Tracks not matched in an update are marked `lost`; they are kept but not drawn | `app/tracking/tracker.py`, `app/utils/drawing.py` | Implemented |
+| Class voting | Majority vote over per-frame class labels | `app/tracking/tracker.py` | Implemented |
+| Trajectory history | Bounded deque of `(x, y, t)` centre points at inference frames | `app/tracking/tracker.py` | Implemented |
+| Direction | Eight image-plane directions from start/end of trajectory window | `app/utils/trajectory.py` | Implemented; not geographic bearings |
+| Speed | Displacement between last two inference samples, moving-average smoothed | `app/speed/estimator.py`, `app/pipeline.py` | Partial: samples touching a frame border are rejected; uncalibrated values are px/s; calibrated values have no perspective correction |
+| Speed calibration | One `pixels_per_meter`, or two image points plus a real distance | `app/config/settings.py` | Implemented; global scale only |
+| Traffic summary | Track totals, active count, class/direction counts, mean speed of active tracks | `app/analytics/analytics.py` | Partial: totals count retained tracks, not line crossings |
+| Vehicle counting | Virtual counting line | — | Not included |
+| Local-video UI | Upload, bounded processing, annotated preview, active-track table | `streamlit_app.py` | Implemented; end-to-end run with real video and YOLO weights not verified here |
+| Webcam and URL input | `FileVideoSource`, `WebcamVideoSource`, `URLVideoSource` | `app/video/source.py` | Partial: module exists and is not used by the UI |
+| Exported annotated video | — | — | Not included |
+| Ground-truth metrics (mAP, HOTA, IDF1, counting error) | — | — | Not included |
+| Perspective-aware calibration | Camera or road-plane homography | — | Not included |
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  A[Video upload] --> B[OpenCV frame reader]
-  B --> C[Resize for inference]
-  C --> D[Ultralytics YOLO]
-  D --> E[Vehicle class filtering]
-  E --> F[supervision ByteTrack]
-  F --> G[Track state and trajectory]
-  G --> H[Direction and speed estimates]
-  G --> I[Traffic summaries]
-  G --> J[Frame annotation]
-  J --> K[Streamlit preview]
+  A[Uploaded video file] --> B[OpenCV frame reader]
+  B --> C{frame index % inference_interval == 0?}
+  C -- no --> H[Return last-known vehicle state]
+  C -- yes --> D[Resize for inference]
+  D --> E[Ultralytics YOLO]
+  E --> F[Vehicle class filter]
+  F --> G[ByteTrack update]
+  G --> I[Track state and trajectory]
+  I --> J[Direction and speed]
+  J --> K[Analytics summary]
+  H --> L[Annotated preview]
+  I --> L
+  K --> M[Streamlit metrics and table]
+  L --> M
 ```
 
-- `app/video/source.py`: OpenCV-backed file, webcam, and URL source abstractions.
-- `app/detection/detector.py`: YOLO loading and detection parsing.
-- `app/tracking/tracker.py`: ByteTrack adapter, track IDs, class voting, trajectory state.
-- `app/pipeline.py`: per-frame orchestration.
-- `app/speed/estimator.py`: displacement-based speed estimates and calibration conversion.
-- `app/utils/trajectory.py`: direction and pixel path length.
-- `app/analytics/analytics.py`: aggregate summaries.
-- `app/utils/drawing.py`: bounding boxes, labels, and trajectory polylines.
-- `app/config/settings.py`: typed configuration dataclasses and YAML loader.
-- `configs/default.yaml`: default settings.
-- `streamlit_app.py`: upload and preview interface.
+Only inference frames touch the detector and tracker. Skipped frames return the state from the most recent inference frame, so boxes and trajectories refresh at the inference rate.
+
+Module responsibilities:
+
+- `app/pipeline.py`: `FrameProcessor`, the per-frame orchestration (scheduling, detection, tracking, direction, speed).
+- `app/detection/detector.py`: YOLO wrapper and result parsing.
+- `app/tracking/tracker.py`: ByteTrack adapter and persistent `TrackedVehicle` state.
+- `app/speed/estimator.py`: speed estimates and calibration helper.
+- `app/utils/trajectory.py`: direction and path length.
+- `app/analytics/analytics.py`: run-level summary.
+- `app/utils/drawing.py`: boxes, labels, trajectories (active tracks only by default).
+- `app/config/settings.py`: typed configuration and YAML loader.
+- `app/video/source.py`: source abstractions (not used by the current UI).
+- `streamlit_app.py`: the only user-facing entry point.
 
 ## Methodology
 
-### Detection
+### Detection and inference scheduling
 
-The default model is `yolov8n.pt`. The detector passes confidence, IoU, class IDs, and device to the Ultralytics prediction API. Model post-processing, including NMS, is handled by the library; the repository does not implement a separate NMS algorithm. Model weights are not committed and may be downloaded on first use.
+The detector runs on frames whose index is a multiple of `detection.inference_interval` (default 2). Each inference frame is resized so its width is at most `detection.processing_width` (default 640). The returned boxes are rescaled to the original frame size. The detector passes confidence, IoU, class IDs, and device to the Ultralytics predict API. NMS is handled by the library; the repository does not implement its own.
+
+Skipped frames do not call the detector and do not update the tracker. Earlier versions re-fed the previous boxes to ByteTrack on skipped frames with new timestamps. That produced duplicate trajectory points, zero-displacement speed samples, and inflated frame counts, so it was removed.
 
 ### Tracking
 
-The tracker uses `supervision.ByteTrack` for association and maintains vehicle state keyed by track ID. It records class votes and a bounded history of bounding-box centers. Track IDs are temporary identities, not guaranteed persistent identities for physical vehicles across long occlusions or separate videos.
+`VehicleTracker` passes each inference frame's detections to `supervision.ByteTrack` and keeps per-track state keyed by the returned track ID. Each track records the last box, a majority-vote class label, first and last seen timestamps, a count of inference updates (`frames_seen`), and a bounded trajectory.
+
+Track IDs are temporary. ByteTrack can reassign identities after long occlusions, and IDs are not comparable across separate runs. Tracks not matched in an update get `status = "lost"`. They stay in the run's track list but are not drawn and do not contribute to active-track speed statistics.
+
+`tracking.lost_track_buffer` and `tracking.frame_rate` are passed to ByteTrack. Because ByteTrack only sees inference frames, `lost_track_buffer` counts inference updates, not video frames. `frame_rate` is a fixed config value; it is not derived from the video's FPS.
 
 ### Trajectory and direction
 
-Each point is `(x, y, timestamp_s)`, with center coordinates in image pixels. Direction is estimated from displacement over the trajectory window. Since image y-coordinates increase downward, labels such as “North” and “East” are image-plane directions, not compass bearings.
+Each trajectory point is `(x, y, timestamp_s)`: the box centre in original-frame pixels and the video timestamp (frame index / FPS). Direction is the compass label closest to the angle of the displacement from the first to the last point of the window. If that displacement is under 8 px, the label is `Stationary`. Image y increases downward, so the labels are image-plane directions, not compass bearings.
 
 ### Speed and calibration
 
-For points ((x_1,y_1,t_1)) and ((x_2,y_2,t_2)), pixel speed is:
+For the last two trajectory points `(x1, y1, t1)` and `(x2, y2, t2)` with `t2 > t1`:
 
 `v_px/s = sqrt((x2-x1)^2 + (y2-y1)^2) / (t2-t1)`
 
-When a positive pixels-per-meter scale is configured directly—or derived from two configured reference points and their known real-world distance:
+Samples are smoothed per track with a moving average. The effective smoothing window is at least 2, even if `speed.smoothing_window` is configured below 2; with the default window of 5, at most five valid samples contribute to the average. If either the current or preceding box touches a frame border, the sample is skipped because the box may be clipped; the last reliable speed is retained. This reduces edge-induced errors but does not correct perspective or guarantee accurate speeds. When a scale is available:
 
 `v_km/h = (v_px/s / pixels_per_meter) * 3.6`
 
-Without calibration, the result is px/s and must not be interpreted as real-world speed. A global scale does not correct perspective: the same pixel displacement can represent different real distances at different image locations. Physical speed estimates require calibration and validation against known distances or reference speeds.
+The scale comes from `speed.pixels_per_meter`, or from `speed.calibration_points` (two image points) and `speed.calibration_real_distance_m`. An explicit `pixels_per_meter` takes priority. Calibrated values are clamped to `speed.max_plausible_kmh`.
 
-### Counting and traffic flow
+Without a scale, the value is in px/s and labelled `px/s~` on the frame and `px/s (approx.)` in the table. It is not a real-world speed. A single global scale ignores perspective: the same pixel displacement represents different real distances at different image positions. Speed is computed from video timestamps, not wall-clock time. Setting `speed.enabled: false` disables it.
 
-The aggregator's retained track count is not equivalent to unique vehicles crossing a counting line. Its flow-per-minute statistic is based on retained tracks and elapsed video time, not explicit line-crossing events. Treat it as a coarse summary until a counting-line implementation is validated against manually verified counts.
+### Counting and traffic summary
+
+The summary (`TrafficAnalytics`) reports:
+
+- **Tracks retained**: all tracks in the run, including lost ones. This is not a count of unique vehicles and not a count of line crossings.
+- **Active at last processed frame**: tracks with `status == "active"` after the final inference frame.
+- **Mean speed of active tracks**: the average of their current smoothed speeds, labelled with its unit. Lost tracks are excluded.
+- **Class and direction distributions**: counts over all retained tracks.
+- **Flow per minute** (computed but not shown in the UI): retained tracks divided by elapsed video minutes since the first track. It is a coarse statistic.
+
+No counting line exists, so the repository does not measure vehicles crossing a point. Treat the summary as a descriptive aid.
+
+## Configuration
+
+Defaults live in `configs/default.yaml`. The loader maps sections to dataclasses in `app/config/settings.py`. A missing or malformed explicitly selected file is an error and is not silently replaced with defaults. If the default config file itself is absent, built-in defaults are used with a warning. Unknown keys are ignored with warnings, so check spelling. The Streamlit sidebar edits only the frame limit and the config path; it does not expose every setting as an interactive control.
+
+Keys that take effect:
+
+| Section | Keys |
+|---|---|
+| `detection` | `model_name`, `confidence_threshold`, `iou_threshold`, `processing_width`, `inference_interval`, `classes`, `device` |
+| `tracking` | `track_activation_threshold`, `lost_track_buffer`, `minimum_matching_threshold`, `frame_rate`, `minimum_consecutive_frames`, `trajectory_length` |
+| `speed` | `enabled`, `pixels_per_meter`, `calibration_points`, `calibration_real_distance_m`, `smoothing_window`, `max_plausible_kmh` |
+| `ui` | `show_labels`, `show_trajectories` |
+
+Reserved keys, parsed but not used by the code yet: `processing_mode` (presets are defined in `get_processing_mode_presets()` but never applied), `detection.frame_skip`, `ui.ui_update_interval`, `ui.max_table_rows`, `ui.theme_accent`, and the whole `demo` section.
+
+Example calibration (two image points on a lane marking 3.5 m apart):
+
+```yaml
+speed:
+  calibration_points: [[120, 400], [520, 400]]
+  calibration_real_distance_m: 3.5
+```
 
 ## Repository structure
 
 ```text
 trafficvision-ai/
 ├── .streamlit/config.toml
-├── LICENSE
+├── LICENSE                 # MIT, Muhammad Zulqarnain Abdullah (2026)
 ├── README.md
-├── AUDIT.md
+├── AUDIT.md                # verification status of earlier audit items
 ├── requirements.txt
+├── requirements-test.txt
+├── pytest.ini
+├── ruff.toml
 ├── packages.txt
 ├── streamlit_app.py
 ├── configs/
 │   ├── default.yaml
 │   └── demo_videos.yaml
 ├── tests/
-│   └── test_trajectory_speed.py
+│   ├── synthetic.py
+│   ├── test_app_smoke.py
+│   ├── test_config.py
+│   ├── test_edge_speed.py
+│   ├── test_pipeline_tracking.py
+│   ├── test_runner.py
+│   ├── test_synthetic_regression.py
+│   ├── test_trajectory_speed.py
+│   ├── test_ui_state.py
+│   └── test_video_download.py
 └── app/
     ├── pipeline.py
     ├── analytics/analytics.py
@@ -127,26 +195,28 @@ trafficvision-ai/
     └── video/source.py
 ```
 
+`configs/demo_videos.yaml` is not read by any code in this repository.
+
 ## Technology stack
 
 | Technology | Role |
 |---|---|
-| Python | Application and processing code |
-| Ultralytics | YOLO model inference |
-| Supervision / ByteTrack | Multi-object association |
-| OpenCV | Video capture, resize, and drawing |
-| NumPy | Detection arrays and numerical operations |
-| Streamlit | Local upload and preview UI |
-| PyYAML | Configuration loading |
-| Requests | Downloading public URL videos |
-| PyTorch / Torchvision | Model runtime |
-| pytest | Lightweight unit tests |
+| Python 3 | Application code |
+| Ultralytics | YOLO inference |
+| supervision (≥0.23, <0.24) | ByteTrack association |
+| OpenCV | Video decoding, resize, drawing |
+| NumPy | Arrays |
+| Streamlit | Upload and preview UI |
+| PyYAML | Configuration |
+| Requests | Used only by `URLVideoSource` |
+| PyTorch / Torchvision | Ultralytics runtime |
+| pytest | Tests |
 
-Dependency ranges are declared in `requirements.txt`; there is no exact lockfile or verified platform matrix.
+Dependency ranges are in `requirements.txt`. There is no lockfile and no tested platform matrix.
 
 ## Setup and execution
 
-Prerequisites: Git and a Python version compatible with the dependency wheels for your platform.
+Prerequisites: Git and a Python version with wheels for PyTorch, Ultralytics, and OpenCV on your platform.
 
 ```bash
 git clone https://github.com/Mzaq1559/trafficvision-ai.git
@@ -159,79 +229,112 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Launch the UI from the repository root:
+For tests and static checks without installing PyTorch or Ultralytics, install the lighter development dependencies separately:
+
+```bash
+python -m pip install -r requirements-test.txt
+```
+
+Run the UI from the repository root:
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-Upload a video and click **Process video**. The UI limits processing to a configurable number of frames and displays the current annotated frame plus track information. It does not export a full annotated video. Webcam availability depends on the host machine and is generally not available in hosted containers.
+Upload a video (mp4, avi, mov, or mkv) and click **Process video**. The app processes at most the configured number of frames, shows the annotated preview, and then shows throughput, the summary, and a table of active tracks. It does not write an annotated video file. Throughput includes decoding, inference, tracking, and preview rendering.
 
-The default model is `yolov8n.pt`. Ultralytics may download it on first inference; offline use requires a locally available weight file. If PyTorch installation fails, use the official [PyTorch installation selector](https://pytorch.org/get-started/locally/) to select compatible wheels.
+The first inference downloads `yolov8n.pt` through Ultralytics unless a copy is available locally. If PyTorch fails to install, use the [PyTorch installation selector](https://pytorch.org/get-started/locally/).
 
-Load configuration without starting inference:
+Check the configuration without starting inference:
 
 ```bash
 python -c "from app.config import load_config; print(load_config())"
 ```
 
-Main defaults live in `configs/default.yaml`: confidence, IoU, processing width, inference interval, classes, tracking parameters, and optional speed calibration.
-
-## Testing and evaluation
-
-Run the lightweight synthetic suite:
+## Testing and validation
 
 ```bash
+pytest -q
 python -m pytest -q
 ```
 
-Tests cover trajectory calculations, speed conversion, and configuration validation. They do not download weights or evaluate YOLO accuracy, ByteTrack quality, or end-to-end UI behavior. Run them in a clean environment before relying on the project.
+The suite contains 63 tests across nine files:
 
-No labelled dataset or measured benchmark is included. A reproducible evaluation should record model version/weights, Python and dependency versions, hardware/device, input resolution/FPS/duration, inference settings, number of runs, warm-up procedure, and whether decoding, tracking, annotation, and output writing are included. Use ground truth for precision/recall/mAP, annotated tracks for suitable MOT metrics (e.g. HOTA or IDF1), and verified counts for counting error. Processing FPS is throughput, not accuracy.
+- `tests/test_app_smoke.py` (4): initial render, configuration status, missing-config warning, and empty config-path behavior.
+- `tests/test_config.py` (14): valid/missing/malformed config, schema validation, unknown-key warnings, class-list validation, and defaults.
+- `tests/test_edge_speed.py` (6): ground-truth speed for fully visible movement and border clipping on all four edges, plus uncalibrated px/s.
+- `tests/test_pipeline_tracking.py` (6): inference scheduling, speed units and disabling, lost-track rendering, analytics filtering, and per-frame snapshots.
+- `tests/test_runner.py` (8): processing results, configuration errors, corrupt video, warnings, run isolation, and temporary-file cleanup.
+- `tests/test_synthetic_regression.py` (4): stable identity, calibrated ground-truth speed, duplicate trajectory prevention, and inference cadence on a generated video.
+- `tests/test_trajectory_speed.py` (10): direction, trajectory length, calibration, speed units, timestamp guard, and config behavior.
+- `tests/test_ui_state.py` (6): upload identity, stale results, and config-path semantics.
+- `tests/test_video_download.py` (5): successful and interrupted downloads, cache preservation/replacement, and webcam cleanup.
+
+The synthetic tests use generated video and an injected threshold detector, not YOLO weights. They validate selected pipeline behaviors but do not measure real-world detection accuracy or tracking quality. The Streamlit smoke tests exercise UI rendering/state helpers, not a full YOLO-backed real-video session.
+
+Lint policy is explicitly configured in `ruff.toml`: `ruff check app streamlit_app.py tests` checks E/F/W rules and ignores E501. Run `mypy app --ignore-missing-imports` for type checking.
+
+## Evaluation methodology
+
+No benchmark results are included. A scientifically meaningful evaluation should record model weights and version, Python and dependency versions, hardware and device, input resolution, FPS, and duration, inference settings (including `inference_interval`), the number of runs, warm-up, and whether decoding, tracking, annotation, and output are included in timing.
+
+Recommended metrics, each needing its own ground truth:
+
+- Detection: precision, recall, and mAP against labelled boxes.
+- Tracking: HOTA or IDF1 against annotated tracks.
+- Counting: count error against manually verified counts, once a counting line exists.
+- Speed: error against surveyed distances or reference speeds, per calibration and per image region.
+- Throughput: FPS as throughput only, with the measurement scope stated.
 
 ## Limitations
 
-- Occlusion, small/distant vehicles, lighting, blur, and domain shift may cause missed detections.
-- Tracking can produce fragmented tracks and identity switches.
-- Direction labels are image-relative, not geographic.
-- Global pixels-per-meter conversion does not correct perspective.
-- Retained track totals and flow estimates are not line-crossing counts.
-- Reusing detections between inference frames may produce stale boxes.
+- Occlusion, small or distant vehicles, lighting, blur, and domain shift can cause missed detections.
+- Tracks can fragment and switch identity. `tracking.frame_rate` is a constant, not the video FPS.
+- Between inference frames, the UI shows the last inference boxes. Speed and direction change only at inference frames.
+- Speed is an approximation from two samples, smoothed over a short window. Uncalibrated values are not physical speeds. Calibrated values have no perspective correction.
+- Direction labels are image-relative.
+- Totals and flow are not line-crossing counts.
+- Lost tracks are kept for the whole run, so memory grows with the number of tracks. Long runs have not been tested.
+- The UI processes at most `max_frames` frames (30–600) and does not export video.
+- Reserved config keys have no effect.
 - OpenCV codec support depends on the installed build.
-- Dependencies are not exactly locked and cross-platform reproducibility is not established.
+- Dependencies are not locked. Cross-platform reproducibility has not been established.
 - No labelled evaluation or validated deployment is included.
 
 Do not use outputs for enforcement or safety-critical decisions without independent validation.
 
 ## Research directions
 
-1. Evaluate detection on labelled traffic datasets and compare model variants.
-2. Evaluate tracking with annotated sequences and appropriate MOT metrics.
-3. Add virtual counting lines and compare counts with manually verified references.
-4. Calibrate the camera/road plane and validate speed against reference measurements.
-5. Measure accuracy-throughput trade-offs across resolution and inference intervals.
-6. Evaluate different camera angles, weather, lighting, and traffic densities.
-7. Measure CPU memory and throughput for possible edge deployment.
+1. Evaluate detection on labelled traffic data and compare model variants.
+2. Evaluate tracking on annotated sequences with appropriate MOT metrics.
+3. Add a virtual counting line and compare its counts with manual counts.
+4. Calibrate the camera or road plane and validate speed against reference measurements.
+5. Measure accuracy and throughput across resolution and inference-interval settings.
+6. Test across camera angles, weather, lighting, and traffic density.
+7. Measure CPU memory and throughput for edge deployment.
 
 ## Troubleshooting
 
-- **Missing weights:** check internet access or supply a locally available, appropriately licensed model file.
-- **Video cannot open:** verify the path and codec; try an MP4 supported by your OpenCV build.
-- **Slow CPU inference:** reduce processing width or increase inference interval, then evaluate tracking impact.
-- **Streamlit launch fails:** activate the virtual environment, install dependencies, and run from the repository root.
-- **Invalid configuration:** ensure YAML is a mapping and confidence/IoU values are between 0 and 1.
-- **Webcam unavailable:** use a local uploaded video; hosted services generally cannot access your physical camera.
+- **Missing weights:** check internet access, or place a locally available, appropriately licensed `yolov8n.pt` in the working directory and set `detection.model_name` to its path.
+- **Video cannot open:** check the path and codec; try an MP4 (H.264) that your OpenCV build supports.
+- **Slow CPU inference:** lower `processing_width` or raise `inference_interval`, then re-check tracking quality.
+- **Streamlit launch fails:** activate the virtual environment, reinstall requirements, and run from the repository root.
+- **Config has no effect:** check key spelling (unknown keys are reported as warnings) and whether the key is reserved.
+- **Config file error:** an explicitly selected missing or malformed file is reported; fix the path or YAML rather than expecting a silent fallback.
+- **`supervision` error on startup:** confirm `pip show supervision` reports 0.23.x. Older versions reject the `minimum_consecutive_frames` argument.
+- **Webcam unavailable:** the UI does not offer webcam input; `WebcamVideoSource` is not wired in.
 
 ## References
 
 - Ultralytics YOLO documentation: https://docs.ultralytics.com/
-- Zhang et al., “ByteTrack: Multi-Object Tracking by Associating Every Detection Box,” ECCV 2022: https://arxiv.org/abs/2110.06864
+- Zhang et al., "ByteTrack: Multi-Object Tracking by Associating Every Detection Box," ECCV 2022: https://arxiv.org/abs/2110.06864
 - Supervision documentation: https://supervision.roboflow.com/
 - OpenCV documentation: https://docs.opencv.org/
+- Streamlit documentation: https://docs.streamlit.io/
 - PyTorch documentation: https://pytorch.org/docs/stable/index.html
 
-The project uses these libraries; it does not claim to reproduce an entire paper or introduce a novel detector/tracker.
+This project uses these libraries. It does not reproduce a published system or introduce a new detector or tracker.
 
 ## License
 
-The repository includes an MIT license attributed to Muhammad Zulqarnain Abdullah. Pretrained weights, dependencies, and sample videos may have separate terms; verify them before redistribution.
+The source code is licensed under the MIT License; see [LICENSE](LICENSE) (copyright 2026 Muhammad Zulqarnain Abdullah). Pretrained weights (for example Ultralytics YOLO checkpoints), third-party dependencies, and any sample videos are governed by their own terms and are not relicensed by this repository. Verify those terms before redistribution.

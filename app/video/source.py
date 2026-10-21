@@ -5,13 +5,17 @@ Supports three input modes:
   1. Recorded video upload (a local file path, e.g. from Streamlit's file_uploader)
   2. Camera / webcam input (device index) - only works where OpenCV can see a camera,
      which is NOT the case on Streamlit Community Cloud's hosted containers.
-  3. Public demo video URLs (downloaded once, then read as a normal file)
+  3. Public demo video URLs (downloaded once into a cache file, then read as a normal file)
 
 All sources expose the same minimal interface so the processing pipeline
 never needs to know which one it is dealing with.
+
+Note: the Streamlit entry point currently calls cv2.VideoCapture directly and
+does not use these classes. They are tested in isolation only.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import time
@@ -123,13 +127,14 @@ class WebcamVideoSource(_CVBackedSource):
 
     Only works when a camera device is actually present and accessible to the
     process (i.e. running locally). On Streamlit Community Cloud there is no
-    camera device, so this will fail to open - the UI should catch that and
-    fall back to file/URL/demo mode.
+    camera device, so this will fail to open. The capture is released before
+    the error is raised.
     """
 
     def __init__(self, device_index: int = 0):
         cap = cv2.VideoCapture(device_index)
         if not cap.isOpened():
+            cap.release()
             raise IOError(
                 f"Could not open camera device {device_index}. "
                 "Webcam input is unavailable in hosted/cloud environments."
@@ -138,35 +143,70 @@ class WebcamVideoSource(_CVBackedSource):
         self.device_index = device_index
 
 
+def is_readable_video(path: str) -> bool:
+    """True if OpenCV can open the file and reports at least one frame."""
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return False
+    cap = cv2.VideoCapture(path)
+    try:
+        return bool(cap.isOpened() and cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0)
+    finally:
+        cap.release()
+
+
 class URLVideoSource(FileVideoSource):
     """
-    Downloads a public video URL to a temp file, then behaves like a
-    FileVideoSource. Downloading (rather than streaming) keeps frame-count
-    and seeking well-defined and avoids depending on network stability
-    during processing.
+    Downloads a public video URL into a cache file, then behaves like a
+    FileVideoSource.
+
+    The download goes to a temporary file first. It replaces the cache file
+    only after the transfer completed (Content-Length matched when given) and
+    the result opens as a video. A failed download removes its temporary file
+    and leaves any previously valid cache file untouched.
     """
 
-    def __init__(self, url: str, timeout_s: int = 60):
-        import requests  # local import: only needed for this mode
+    def __init__(self, url: str, timeout_s: int = 60, cache_dir: Optional[str] = None,
+                 refresh: bool = False):
+        cache_dir = cache_dir or tempfile.gettempdir()
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+        local_path = os.path.join(cache_dir, f"trafficvision_dl_{digest}.mp4")
 
-        tmp_dir = tempfile.gettempdir()
-        local_path = os.path.join(tmp_dir, f"trafficvision_dl_{abs(hash(url))}.mp4")
-
-        if not os.path.exists(local_path):
-            resp = requests.get(url, stream=True, timeout=timeout_s)
-            resp.raise_for_status()
-            with open(local_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1 << 20):
-                    if chunk:
-                        f.write(chunk)
+        if refresh or not is_readable_video(local_path):
+            download_atomically(url, local_path, timeout_s=timeout_s)
 
         super().__init__(local_path)
         self.url = url
 
 
+def download_atomically(url: str, destination: str, timeout_s: int = 60) -> None:
+    """Fetch `url` into `destination` or raise, never leaving a partial file behind."""
+    import requests  # local import: only needed for this mode
+
+    tmp_path = f"{destination}.{os.getpid()}.part"
+    try:
+        with requests.get(url, stream=True, timeout=timeout_s) as resp:
+            resp.raise_for_status()
+            expected = resp.headers.get("Content-Length")
+            written = 0
+            with open(tmp_path, "wb") as handle:
+                for chunk in resp.iter_content(chunk_size=1 << 20):
+                    if chunk:
+                        handle.write(chunk)
+                        written += len(chunk)
+        if expected is not None and written != int(expected):
+            raise IOError(f"incomplete download: {written} of {expected} bytes")
+        if not is_readable_video(tmp_path):
+            raise IOError("downloaded file is not a readable video")
+        os.replace(tmp_path, destination)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
 def open_source(mode: str, **kwargs) -> VideoSource:
     """
-    Factory used by the Streamlit app.
+    Factory for the three source types.
 
     mode: one of "file", "webcam", "url"
     kwargs:

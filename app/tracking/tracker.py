@@ -8,12 +8,14 @@ and layers persistent per-track state on top of it:
   - trajectory history (for drawing paths and for speed estimation)
   - time-in-scene (based on video timestamps, not wall-clock time)
   - a majority-vote class label (detections can flicker between classes)
+  - an edge flag per update, so speed can skip boxes clipped by the frame border
 """
 from __future__ import annotations
 
+import dataclasses
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -31,11 +33,15 @@ class TrackedVehicle:
     trajectory: Deque[Tuple[float, float, float]]  # (x, y, timestamp_s)
     first_seen_s: float
     last_seen_s: float
-    frames_seen: int = 0
+    frames_seen: int = 0  # number of tracker updates (inference frames), not video frames
     speed_kmh: Optional[float] = None
     speed_is_calibrated: bool = False
     direction: Optional[str] = None
     status: str = "active"  # active | lost
+    # True when the box touched the frame border at the latest / previous
+    # inference update. Used to skip speed samples built from clipped boxes.
+    edge_clipped: bool = False
+    prev_edge_clipped: bool = False
 
     @property
     def duration_s(self) -> float:
@@ -45,6 +51,23 @@ class TrackedVehicle:
     def center(self) -> Tuple[float, float]:
         x1, y1, x2, y2 = self.xyxy
         return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+def copy_vehicle(veh: TrackedVehicle) -> TrackedVehicle:
+    """Copy one track's state, including its own trajectory deque."""
+    return dataclasses.replace(
+        veh, trajectory=deque(veh.trajectory, maxlen=veh.trajectory.maxlen)
+    )
+
+
+def _touches_border(box: Sequence[float], frame_shape, margin: float) -> bool:
+    """True if the box reaches within `margin` px of any frame edge, i.e. it may be
+    clipped. Without a frame shape nothing can be judged, so the box is not flagged."""
+    if frame_shape is None:
+        return False
+    h, w = frame_shape[0], frame_shape[1]
+    x1, y1, x2, y2 = box
+    return x1 <= margin or y1 <= margin or x2 >= w - margin or y2 >= h - margin
 
 
 class VehicleTracker:
@@ -88,10 +111,15 @@ class VehicleTracker:
         self._class_votes.clear()
 
     def update(
-        self, detections: List[Detection], timestamp_s: float
+        self,
+        detections: List[Detection],
+        timestamp_s: float,
+        frame_shape: Optional[Tuple[int, ...]] = None,
+        edge_margin_px: float = 2.0,
     ) -> List[TrackedVehicle]:
-        """Feed one frame's detections in, get back the current set of
-        actively-tracked vehicles (with persistent IDs and trajectories)."""
+        """Feed one frame's detections in and get back the current track list
+        (live objects). Tracks not matched in this update are marked 'lost' but retained.
+        `frame_shape` (H, W, ...) enables the border-clipping flag."""
         sv = self._sv
 
         # Map class_id -> class_name (not position -> name: tracked results
@@ -114,7 +142,8 @@ class VehicleTracker:
         seen_ids = set()
         for i in range(len(tracked)):
             track_id = int(tracked.tracker_id[i])
-            box = tuple(float(v) for v in tracked.xyxy[i])
+            x1, y1, x2, y2 = (float(v) for v in tracked.xyxy[i])
+            box = (x1, y1, x2, y2)
             conf = float(tracked.confidence[i]) if tracked.confidence is not None else 0.0
             cls_id = int(tracked.class_id[i]) if tracked.class_id is not None else -1
             class_name = id_to_name.get(cls_id, "vehicle")
@@ -134,6 +163,9 @@ class VehicleTracker:
                 )
 
             veh = self._vehicles[track_id]
+            clipped = _touches_border(box, frame_shape, edge_margin_px)
+            veh.prev_edge_clipped = veh.edge_clipped
+            veh.edge_clipped = clipped
             veh.xyxy = box
             veh.confidence = conf
             veh.class_name = self._majority_class(track_id)
@@ -143,14 +175,23 @@ class VehicleTracker:
             cx, cy = veh.center
             veh.trajectory.append((cx, cy, timestamp_s))
 
-        # Anything not seen this frame is (still) lost; ByteTrack already
-        # drops IDs past lost_track_buffer, so we mirror that by marking
-        # status rather than deleting immediately (keeps the table stable).
+        # Anything not seen this update is marked lost. It is kept (not deleted)
+        # so the run's track list stays stable; drawing skips lost tracks.
         for track_id, veh in self._vehicles.items():
             if track_id not in seen_ids:
                 veh.status = "lost"
 
+        return self.all_vehicles()
+
+    def all_vehicles(self) -> List[TrackedVehicle]:
+        """Every track seen in this run, including tracks currently marked lost.
+        Returns live objects; use snapshot_vehicles() to keep per-frame values."""
         return list(self._vehicles.values())
+
+    def snapshot_vehicles(self) -> List[TrackedVehicle]:
+        """Independent copies of the current track state, safe to keep after
+        later frames have been processed."""
+        return [copy_vehicle(v) for v in self._vehicles.values()]
 
     def active_vehicles(self) -> List[TrackedVehicle]:
         return [v for v in self._vehicles.values() if v.status == "active"]

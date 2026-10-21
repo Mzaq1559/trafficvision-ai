@@ -1,5 +1,8 @@
 from app.config.settings import (
     AppConfig,
+    ConfigError,
+    ConfigResult,
+    DEFAULT_CONFIG_PATH,
     DetectionConfig,
     TrackingConfig,
     SpeedConfig,
@@ -7,11 +10,15 @@ from app.config.settings import (
     ProcessingMode,
     DemoConfig,
     load_config,
+    read_config,
     get_processing_mode_presets,
 )
 
 __all__ = [
     "AppConfig",
+    "ConfigError",
+    "ConfigResult",
+    "DEFAULT_CONFIG_PATH",
     "DetectionConfig",
     "TrackingConfig",
     "SpeedConfig",
@@ -19,5 +26,6 @@ __all__ = [
     "ProcessingMode",
     "DemoConfig",
     "load_config",
+    "read_config",
     "get_processing_mode_presets",
 ]

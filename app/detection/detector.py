@@ -3,8 +3,8 @@ Vehicle detection using Ultralytics YOLO.
 
 This module is intentionally framework-agnostic (no Streamlit imports) so it
 can be unit tested and reused outside the dashboard. Model loading is the
-expensive part; callers (the Streamlit app) are expected to cache the
-VehicleDetector instance themselves (st.cache_resource).
+expensive part; the Streamlit app caches the VehicleDetector instance with
+st.cache_resource so repeated runs reuse the loaded weights.
 """
 from __future__ import annotations
 
@@ -59,7 +59,12 @@ class VehicleDetector:
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
-        self.classes = list(classes) if classes else list(COCO_VEHICLE_CLASSES.keys())
+        if classes is None:
+            self.classes = list(COCO_VEHICLE_CLASSES.keys())  # default: all vehicle classes
+        else:
+            self.classes = list(classes)
+            if not self.classes:
+                raise ValueError("classes must not be empty; pass None to use the vehicle defaults")
         self.device = device
         self._model = None  # lazy-loaded so importing this module is cheap
 
@@ -80,6 +85,7 @@ class VehicleDetector:
         if self._model is None:
             self.load()
 
+        assert self._model is not None
         results = self._model.predict(
             source=frame,
             conf=self.confidence_threshold,

@@ -1,9 +1,8 @@
 """
 Rendering helpers. Kept separate from the tracking/analytics logic so the
 "draw the frame" concern never gets tangled with "update the dashboard"
-concern - the two are updated at different intervals on purpose (see
-streamlit_app.py: rendering happens every frame, analytics/UI widgets
-refresh every `ui_update_interval` frames).
+concern. Tracks whose status is "lost" are skipped by default so that stale
+boxes and trajectories of vehicles no longer observed are not drawn.
 """
 from __future__ import annotations
 
@@ -31,9 +30,13 @@ def draw_detections(
     vehicles: Iterable,
     show_labels: bool = True,
     selected_id: int | None = None,
+    include_lost: bool = False,
 ) -> np.ndarray:
-    """Draw bounding boxes + optional labels for a set of TrackedVehicle."""
+    """Draw bounding boxes + optional labels for a set of TrackedVehicle.
+    Lost tracks are skipped unless include_lost=True."""
     for veh in vehicles:
+        if not include_lost and getattr(veh, "status", "active") != "active":
+            continue
         x1, y1, x2, y2 = (int(v) for v in veh.xyxy)
         color = _color_for_id(veh.track_id)
         thickness = 3 if veh.track_id == selected_id else 2
@@ -58,9 +61,12 @@ def _draw_label(frame: np.ndarray, text: str, origin: Tuple[int, int], color) ->
     cv2.putText(frame, text, (x + 2, y - 2), font, scale, (17, 24, 39), thickness, cv2.LINE_AA)
 
 
-def draw_trajectory(frame: np.ndarray, vehicles: Iterable) -> np.ndarray:
-    """Draw the recent path of each tracked vehicle as a polyline."""
+def draw_trajectory(frame: np.ndarray, vehicles: Iterable, include_lost: bool = False) -> np.ndarray:
+    """Draw the recent path of each tracked vehicle as a polyline.
+    Lost tracks are skipped unless include_lost=True."""
     for veh in vehicles:
+        if not include_lost and getattr(veh, "status", "active") != "active":
+            continue
         pts = [(int(x), int(y)) for x, y, _ in veh.trajectory]
         if len(pts) < 2:
             continue

@@ -1,0 +1,7 @@
+# Project lint policy. Enforces pyflakes correctness (F), pycodestyle errors (E)
+# and warnings (W). Line length (E501) is not enforced, and the rest of Ruff's
+# default rule set (pyupgrade, isort, ruff-specific rules) is not applied, so
+# existing code is not rewritten for style alone.
+[lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
