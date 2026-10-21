@@ -1,4 +1,3 @@
-from pathlib import Path
 import pytest
 from app.config import AppConfig, ProcessingMode, load_config
 from app.speed.estimator import SpeedEstimator, calibrate_pixels_per_meter
@@ -17,8 +16,10 @@ def test_trajectory_length():
 
 def test_calibration():
     assert calibrate_pixels_per_meter((0,0), (30,40), 10) == pytest.approx(5)
-    with pytest.raises(ValueError): calibrate_pixels_per_meter((0,0), (1,1), 0)
-    with pytest.raises(ValueError): calibrate_pixels_per_meter((1,1), (1,1), 2)
+    with pytest.raises(ValueError):
+        calibrate_pixels_per_meter((0,0), (1,1), 0)
+    with pytest.raises(ValueError):
+        calibrate_pixels_per_meter((1,1), (1,1), 2)
 
 def test_speed_approximate_and_calibrated():
     result = SpeedEstimator(smoothing_window=2).estimate(1, [(0,0,0), (3,4,1)])
@@ -45,12 +46,13 @@ def test_missing_config_uses_defaults(tmp_path):
 def test_invalid_config_is_rejected(tmp_path):
     p = tmp_path / "bad.yaml"
     p.write_text("detection:\n  confidence_threshold: 2\n", encoding="utf-8")
-    with pytest.raises(ValueError): load_config(p)
+    with pytest.raises(ValueError):
+        load_config(p)
 
 def test_config_derives_speed_calibration_from_reference_points(tmp_path):
     p = tmp_path / "calibrated.yaml"
     p.write_text(
-        "speed:\\n  calibration_points: [[0, 0], [30, 40]]\\n  calibration_real_distance_m: 10\\n",
+        "speed:\n  calibration_points: [[0, 0], [30, 40]]\n  calibration_real_distance_m: 10\n",
         encoding="utf-8",
     )
     assert load_config(p).speed.pixels_per_meter == pytest.approx(5.0)
