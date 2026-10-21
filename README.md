@@ -41,7 +41,7 @@ Status labels: **Implemented** (code path exercised by the Streamlit app or test
 | Class voting | Majority vote over per-frame class labels | `app/tracking/tracker.py` | Implemented |
 | Trajectory history | Bounded deque of `(x, y, t)` centre points at inference frames | `app/tracking/tracker.py` | Implemented |
 | Direction | Eight image-plane directions from start/end of trajectory window | `app/utils/trajectory.py` | Implemented; not geographic bearings |
-| Speed | Displacement between last two inference samples, moving-average smoothed | `app/speed/estimator.py` | Partial: uncalibrated values are px/s; calibrated values have no perspective correction |
+| Speed | Displacement between last two inference samples, moving-average smoothed | `app/speed/estimator.py`, `app/pipeline.py` | Partial: samples touching a frame border are rejected; uncalibrated values are px/s; calibrated values have no perspective correction |
 | Speed calibration | One `pixels_per_meter`, or two image points plus a real distance | `app/config/settings.py` | Implemented; global scale only |
 | Traffic summary | Track totals, active count, class/direction counts, mean speed of active tracks | `app/analytics/analytics.py` | Partial: totals count retained tracks, not line crossings |
 | Vehicle counting | Virtual counting line | — | Not included |
@@ -112,7 +112,7 @@ For the last two trajectory points `(x1, y1, t1)` and `(x2, y2, t2)` with `t2 > 
 
 `v_px/s = sqrt((x2-x1)^2 + (y2-y1)^2) / (t2-t1)`
 
-Each sample is averaged with up to `speed.smoothing_window - 1` previous samples for the same track (default window 5). When a scale is available:
+Samples are smoothed per track with a moving average. The effective smoothing window is at least 2, even if `speed.smoothing_window` is configured below 2; with the default window of 5, at most five valid samples contribute to the average. If either the current or preceding box touches a frame border, the sample is skipped because the box may be clipped; the last reliable speed is retained. This reduces edge-induced errors but does not correct perspective or guarantee accurate speeds. When a scale is available:
 
 `v_km/h = (v_px/s / pixels_per_meter) * 3.6`
 
@@ -134,7 +134,7 @@ No counting line exists, so the repository does not measure vehicles crossing a 
 
 ## Configuration
 
-Defaults live in `configs/default.yaml`. The loader maps sections to dataclasses in `app/config/settings.py`. Missing files fall back to the same defaults. Unknown keys are ignored silently, so check spelling. The Streamlit sidebar edits only the frame limit and the config path.
+Defaults live in `configs/default.yaml`. The loader maps sections to dataclasses in `app/config/settings.py`. A missing or malformed explicitly selected file is an error and is not silently replaced with defaults. If the default config file itself is absent, built-in defaults are used with a warning. Unknown keys are ignored with warnings, so check spelling. The Streamlit sidebar edits only the frame limit and the config path; it does not expose every setting as an interactive control.
 
 Keys that take effect:
 
@@ -164,15 +164,25 @@ trafficvision-ai/
 ├── README.md
 ├── AUDIT.md                # verification status of earlier audit items
 ├── requirements.txt
+├── requirements-test.txt
+├── pytest.ini
+├── ruff.toml
 ├── packages.txt
 ├── streamlit_app.py
 ├── configs/
 │   ├── default.yaml
 │   └── demo_videos.yaml
 ├── tests/
+│   ├── synthetic.py
 │   ├── test_app_smoke.py
+│   ├── test_config.py
+│   ├── test_edge_speed.py
 │   ├── test_pipeline_tracking.py
-│   └── test_trajectory_speed.py
+│   ├── test_runner.py
+│   ├── test_synthetic_regression.py
+│   ├── test_trajectory_speed.py
+│   ├── test_ui_state.py
+│   └── test_video_download.py
 └── app/
     ├── pipeline.py
     ├── analytics/analytics.py
@@ -219,6 +229,12 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+For tests and static checks without installing PyTorch or Ultralytics, install the lighter development dependencies separately:
+
+```bash
+python -m pip install -r requirements-test.txt
+```
+
 Run the UI from the repository root:
 
 ```bash
@@ -238,18 +254,25 @@ python -c "from app.config import load_config; print(load_config())"
 ## Testing and validation
 
 ```bash
+pytest -q
 python -m pytest -q
 ```
 
-The suite has 16 tests:
+The suite contains 63 tests across nine files:
 
-- `tests/test_trajectory_speed.py` (10): direction classes, trajectory length, calibration math, speed units, timestamp guard, config defaults, missing and invalid config, two-point calibration derivation.
-- `tests/test_pipeline_tracking.py` (5): inference scheduling (detector called only on inference frames; tracker sees 3 updates for 6 frames), speed from inference timestamps, `speed.enabled`, lost tracks retained but not drawn, and analytics speed statistics that exclude lost tracks.
-- `tests/test_app_smoke.py` (1): the Streamlit script renders its initial state without exceptions (uses `streamlit.testing`).
+- `tests/test_app_smoke.py` (4): initial render, configuration status, missing-config warning, and empty config-path behavior.
+- `tests/test_config.py` (14): valid/missing/malformed config, schema validation, unknown-key warnings, class-list validation, and defaults.
+- `tests/test_edge_speed.py` (6): ground-truth speed for fully visible movement and border clipping on all four edges, plus uncalibrated px/s.
+- `tests/test_pipeline_tracking.py` (6): inference scheduling, speed units and disabling, lost-track rendering, analytics filtering, and per-frame snapshots.
+- `tests/test_runner.py` (8): processing results, configuration errors, corrupt video, warnings, run isolation, and temporary-file cleanup.
+- `tests/test_synthetic_regression.py` (4): stable identity, calibrated ground-truth speed, duplicate trajectory prevention, and inference cadence on a generated video.
+- `tests/test_trajectory_speed.py` (10): direction, trajectory length, calibration, speed units, timestamp guard, and config behavior.
+- `tests/test_ui_state.py` (6): upload identity, stale results, and config-path semantics.
+- `tests/test_video_download.py` (5): successful and interrupted downloads, cache preservation/replacement, and webcam cleanup.
 
-The pipeline tests use a scripted fake detector, so they run without YOLO weights or PyTorch. They do not measure detection accuracy, tracking quality, or real-video behaviour. The test suite does not exercise the processing loop in `streamlit_app.py` on a real video.
+The synthetic tests use generated video and an injected threshold detector, not YOLO weights. They validate selected pipeline behaviors but do not measure real-world detection accuracy or tracking quality. The Streamlit smoke tests exercise UI rendering/state helpers, not a full YOLO-backed real-video session.
 
-Lint and types (run on the branch): `ruff check app streamlit_app.py tests` and `mypy app --ignore-missing-imports`.
+Lint policy is explicitly configured in `ruff.toml`: `ruff check app streamlit_app.py tests` checks E/F/W rules and ignores E501. Run `mypy app --ignore-missing-imports` for type checking.
 
 ## Evaluation methodology
 
@@ -296,7 +319,8 @@ Do not use outputs for enforcement or safety-critical decisions without independ
 - **Video cannot open:** check the path and codec; try an MP4 (H.264) that your OpenCV build supports.
 - **Slow CPU inference:** lower `processing_width` or raise `inference_interval`, then re-check tracking quality.
 - **Streamlit launch fails:** activate the virtual environment, reinstall requirements, and run from the repository root.
-- **Config has no effect:** check key spelling (unknown keys are ignored) and whether the key is reserved.
+- **Config has no effect:** check key spelling (unknown keys are reported as warnings) and whether the key is reserved.
+- **Config file error:** an explicitly selected missing or malformed file is reported; fix the path or YAML rather than expecting a silent fallback.
 - **`supervision` error on startup:** confirm `pip show supervision` reports 0.23.x. Older versions reject the `minimum_consecutive_frames` argument.
 - **Webcam unavailable:** the UI does not offer webcam input; `WebcamVideoSource` is not wired in.
 
